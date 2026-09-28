@@ -20,7 +20,7 @@
 </section>
 <section id="kernel" class="page" hidden>
 <h1>内核版本</h1><p class="intro">查看、安装和切换精确版本，无需运行 Harness。</p>
-<div class="panel"><div class="section-title"><h2>本机版本</h2><span class="muted">切换后可选择启动模式</span></div><div id="core-list" class="version-list"></div><p id="core-error" class="error-text" hidden></p></div>
+<div class="panel"><div class="section-title"><h2>本机版本</h2><span class="muted">切换后可选择启动模式</span></div><div id="core-list" class="version-list"></div><p class="footnote">更新后可卸载旧内核。当前使用的版本需先切换到其他版本；卸载前会停止后端，保留会话、配置与插件数据。</p><p id="core-error" class="error-text" hidden></p></div>
 <div class="panel"><h2>安装其他版本</h2><p class="muted">先下载并校验，再停止后端、切换入口。安装失败时不替换当前版本。</p><div class="form-row"><label>精确版本<input id="core-version" placeholder="例如 0.1.5-rc.1" autocomplete="off"></label><button id="core-fetch" class="secondary action">获取可用版本</button><button id="core-details" class="secondary action">查看兼容声明</button><button id="core-install" class="primary action">安装并切换</button></div><div class="version-browser"><label for="core-versions">已发布版本 <span id="core-version-count" class="muted">点击“获取可用版本”加载</span></label><select id="core-versions" size="6" aria-label="内核已发布版本" disabled><option>尚未获取版本</option></select><p class="footnote">选择列表中的版本会自动读取兼容声明；也可输入精确版本后点击“查看兼容声明”。</p></div><div id="core-compat" class="compat" aria-live="polite"><p class="muted">尚未选择要查看的版本。</p></div><p class="footnote">可切回保留在本机的版本。需要 Node.js、npm 和网络连接。</p></div>
 </section>
 <section id="plugins" class="page" hidden>

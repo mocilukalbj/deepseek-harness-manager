@@ -220,6 +220,14 @@ class Maintenance:
                     result['cores'].append(dict(core, current=False))
             except Exception:
                 pass
+        for core in result['cores']:
+            try:
+                kind, directory = self.core_removal_target(core)
+                core.update(uninstallKind=kind, uninstallPath=str(directory),
+                            canUninstall=not core['current'],
+                            uninstallReason='请先切换到其他内核，再卸载当前版本。' if core['current'] else '')
+            except (OSError, ValueError, RuntimeError, KeyError, TypeError) as error:
+                core.update(canUninstall=False, uninstallReason='请先切换到其他内核，再卸载当前版本。' if core['current'] else str(error))
         for p in sorted((self.dsh_home / 'profiles').glob('*/package.json')):
             profile = {'name': p.parent.name, 'plugins': [], 'error': None}
             try:
@@ -587,12 +595,121 @@ console.log(JSON.stringify(rows.map(row => {
             if stage.exists():
                 shutil.rmtree(stage)
 
-    def switch_core(self, version):
+    def switch_core(self, version, entry=None):
         exact_version(version)
         for core in self.inventory()['cores']:
-            if core['version'] == version:
+            if core['version'] == version and (entry is None or core['entry'] == entry):
                 return self.activate(core)
         raise RuntimeError('本机没有该版本，请先安装。')
+
+    def core_removal_target(self, core):
+        """Only owned runtime directories or the recorded original npm package."""
+        root, entry = Path(core['root']), Path(core['entry'])
+        kernels = self.state / 'kernels'
+        if root.is_relative_to(kernels):
+            directory = root.parents[2]
+            expected = directory / 'node_modules/@deepseek-ai/dsh'
+            if directory.parent != kernels or root != expected or directory.name.startswith('.'):
+                raise ValueError('此内核的安装目录结构不受支持，不能自动卸载。')
+            # Every traversed directory must be a real child of the managed root.
+            for path in (kernels, directory, directory/'node_modules', root.parent, root,
+                         directory/'ready.json', directory/'package.json'):
+                if path.is_symlink() or path.resolve() != path:
+                    raise ValueError('安装路径包含重定向，拒绝卸载。')
+            ready = read_json(directory / 'ready.json')
+            manifest = read_json(directory / 'package.json')
+            if (ready.get('entry') != str(entry) or ready.get('version') != core['version']
+                    or manifest.get('name') != 'dsh-shell-runtime'
+                    or manifest.get('dependencies', {}).get(CORE) != core['version']):
+                raise ValueError('安装记录与内核不一致，请刷新后重试。')
+            kind = 'managed'
+        else:
+            original = read_json(self.state/'selection.json', {}).get('originalEntry')
+            if not original or Path(original) != entry:
+                raise ValueError('外部安装：请使用原安装方式卸载。')
+            if len(root.parents) < 4 or root != root.parents[3]/'lib/node_modules/@deepseek-ai/dsh':
+                raise ValueError('外部安装：仅支持已记录的 npm 全局内核卸载。')
+            prefix = root.parents[3]
+            for path in (prefix/'lib', prefix/'lib/node_modules', root.parent, root):
+                if path.is_symlink() or path.resolve() != path:
+                    raise ValueError('npm 安装路径包含重定向，拒绝卸载。')
+            bins = read_json(root/'package.json').get('bin', {})
+            if isinstance(bins, str):
+                bins = {'dsh': bins}
+            if (not isinstance(bins, dict) or set(bins) != {'dsh'}
+                    or not isinstance(bins['dsh'], str) or (root/bins['dsh']).resolve() != entry):
+                raise ValueError('npm 内核入口声明异常，不能自动卸载。')
+            directory, kind = root, 'npm-global'
+        if self.dsh_home.is_relative_to(directory) or self.state.is_relative_to(directory):
+            raise ValueError('安装目录包含 Harness 用户数据，拒绝卸载。')
+        return kind, directory
+
+    def guard_core_removal(self, directory):
+        # Resolve the actual activation link again immediately before deletion.
+        # A stale UI selection must never delete a newly activated runtime.
+        if self.activation_path().resolve().is_relative_to(directory):
+            raise RuntimeError('不能卸载当前使用的内核，请先切换到其他版本。')
+
+    def uninstall_core(self, version, entry):
+        version = exact_version(version)
+        if not isinstance(entry, str) or not Path(entry).is_absolute():
+            raise ValueError('请选择本机列表中的具体安装。')
+        core = next((c for c in self.inventory()['cores']
+                     if c['entry'] == entry and c['version'] == version), None)
+        if not core:
+            raise ValueError('该安装已变化或不在本机列表中，请刷新后重试。')
+        if core['current']:
+            raise RuntimeError('不能卸载当前使用的内核，请先切换到其他版本。')
+        kind, directory = self.core_removal_target(core)
+        self.guard_core_removal(directory)
+        npm, link, saved_link, original_link = None, None, None, None
+        if kind == 'npm-global':
+            npm = self.tool('npm')
+            prefix = directory.parents[3]
+            link = prefix/'bin/dsh'
+            if link.exists() and not link.is_symlink():
+                raise RuntimeError('npm 的 dsh 入口是普通文件，拒绝覆盖；请先检查该入口。')
+            if link.is_symlink():
+                original_link = os.readlink(link)
+                if not link.resolve().is_relative_to(directory):
+                    saved_link = original_link
+        self.stop_normal()
+        self.stop_safe()
+        if listening(self.safe_port):
+            raise RuntimeError('安全模式端口仍被占用，未删除内核。')
+        # Re-read records after stopping backends, before touching any files.
+        if self.core_at(entry) != {k: core[k] for k in ('version', 'entry', 'root')}:
+            raise RuntimeError('卸载前安装信息发生变化，请刷新后重试。')
+        if self.core_removal_target(core) != (kind, directory):
+            raise RuntimeError('卸载前安装位置发生变化，请刷新后重试。')
+        self.guard_core_removal(directory)
+        if link is not None:
+            current_link = os.readlink(link) if link.is_symlink() else None
+            if current_link != original_link or (link.exists() and not link.is_symlink()):
+                raise RuntimeError('卸载前 npm 入口发生变化，请刷新后重试。')
+        if kind == 'managed':
+            shutil.rmtree(directory)
+        else:
+            try:
+                # npm also removes global bin links, even if dsh now points at a
+                # managed runtime. Restore that unrelated link on success/failure.
+                self.run([npm, 'uninstall', '--global', '--prefix', str(prefix), CORE,
+                          '--ignore-scripts', '--no-audit', '--no-fund', '--offline'])
+            finally:
+                if saved_link is not None:
+                    try:
+                        link.symlink_to(saved_link)
+                    except FileExistsError:
+                        if not link.is_symlink() or os.readlink(link) != saved_link:
+                            raise RuntimeError('卸载期间 dsh 入口发生变化，已保留现有入口，请检查后再启动。')
+            if directory.exists():
+                raise RuntimeError('npm 未移除该内核，请查看操作日志。')
+        selection = read_json(self.state/'selection.json', {})
+        original = selection.get('originalEntry')
+        if original and Path(original).is_relative_to(directory):
+            selection.pop('originalEntry')
+            atomic_json(self.state/'selection.json', selection)
+        return {'message': f'已卸载内核 {version}。会话、配置与插件数据已保留；后端保持停止，可重新选择启动模式。'}
 
     def plugin_action(self, request):
         name = package_name(request.get('package'))
@@ -672,7 +789,9 @@ console.log(JSON.stringify(rows.map(row => {
             if action == 'install_core':
                 return self.install_core(request.get('version'))
             if action == 'switch_core':
-                return self.switch_core(request.get('version'))
+                return self.switch_core(request.get('version'), request.get('entry'))
+            if action == 'uninstall_core':
+                return self.uninstall_core(request.get('version'), request.get('entry'))
             if action in ('plugin_install', 'plugin_remove', 'plugin_toggle'):
                 return self.plugin_action(request)
             raise ValueError('不支持的管理操作。')

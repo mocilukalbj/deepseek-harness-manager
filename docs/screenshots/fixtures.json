@@ -107,7 +107,9 @@
         "version": "0.1.5-rc.1",
         "entry": "/home/demo/.npm-global/lib/node_modules/@deepseek-ai/dsh/lib/bin.js",
         "root": "/home/demo/.npm-global/lib/node_modules/@deepseek-ai/dsh",
-        "current": true
+        "current": true,
+        "canUninstall": false,
+        "uninstallReason": "请先切换到其他内核，再卸载当前版本。"
       }
     ]
   },

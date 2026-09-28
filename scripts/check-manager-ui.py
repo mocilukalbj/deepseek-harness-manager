@@ -11,6 +11,13 @@ window.__TAURI__={core:{invoke:async(cmd,args)=>{
  if(cmd==='startup_mode')return 'manage';
  const r=args.request;window.testRequests.push(r);
  if(r.action==='status')return JSON.parse(JSON.stringify(window.testFixture));
+ if(r.action==='uninstall_core'){
+  if(window.failUninstall)throw new Error('模拟卸载失败');
+  const selected=window.testFixture.cores.find(c=>c.entry===r.entry&&c.version===r.version);
+  if(!selected?.canUninstall||selected.current)throw new Error('protected runtime');
+  window.testFixture.cores=window.testFixture.cores.filter(c=>c.entry!==r.entry);
+  return {message:'已卸载内核 '+r.version};
+ }
  if(r.package==='fail-plugin')throw new Error('registry offline');
  if(r.action==='versions'){
   if(r.package==='slow-plugin')await new Promise(resolve=>setTimeout(resolve,300));
@@ -100,7 +107,32 @@ def inspect():
  await until(()=>d('plugin-compat').textContent.includes('运行环境声明'));
  d('plugin-form-title').scrollIntoView();
  result.noHorizontalOverflow=document.documentElement.scrollWidth<=window.innerWidth;
- result.noMutations=window.testRequests.every(r=>['status','versions','version_info'].includes(r.action));
+ result.readOnlyVersionQueries=window.testRequests.every(r=>['status','versions','version_info'].includes(r.action));
+ const active='/managed/current/lib/bin.js',old='/managed/old/lib/bin.js';
+ window.testFixture.cores=[
+  {version:'0.1.5-rc.1',entry:active,current:true,canUninstall:false,uninstallReason:'请先切换到其他内核，再卸载当前版本。'},
+  {version:'0.1.5-rc.1',entry:old,current:false,canUninstall:true,uninstallKind:'managed',uninstallPath:'/managed/old'},
+  {version:'0.1.2-rc.1',entry:'/external/bin.js',current:false,canUninstall:false,uninstallReason:'外部安装：请使用原安装方式卸载。'}];
+ d('refresh').click();await wait(50);document.querySelector('[data-page="kernel"]').click();
+ const row=entry=>Array.from(document.querySelectorAll('.version-item')).find(el=>el.textContent.includes(entry));
+ result.currentRuntimeProtected=!row(active).querySelector('.danger');
+ result.externalRuntimeExplained=row('/external/bin.js').textContent.includes('外部安装')&&!row('/external/bin.js').querySelector('.danger');
+ const countBefore=window.testRequests.filter(r=>r.action==='uninstall_core').length;
+ row(old).querySelector('.version-actions .danger').click();
+ result.uninstallConfirmationShowsTarget=!row(old).querySelector('.uninstall-confirmation').hidden&&row(old).querySelector('.uninstall-confirmation').textContent.includes('/managed/old');
+ Array.from(row(old).querySelectorAll('button')).find(b=>b.textContent==='取消').click();
+ result.uninstallCancelIsReadOnly=row(old).querySelector('.uninstall-confirmation').hidden&&window.testRequests.filter(r=>r.action==='uninstall_core').length===countBefore;
+ window.failUninstall=true;
+ row(old).querySelector('.version-actions .danger').click();
+ row(old).querySelector('.uninstall-confirmation .danger').click();
+ await until(()=>d('notice').textContent.includes('模拟卸载失败')&&!row(old).querySelector('.version-actions .danger').disabled);
+ result.failedUninstallKeepsVersion=!!row(old);
+ window.failUninstall=false;
+ row(old).querySelector('.version-actions .danger').click();row(old).querySelector('.uninstall-confirmation .danger').click();
+ await until(()=>!row(old));
+ const last=window.testRequests.filter(r=>r.action==='uninstall_core').at(-1);
+ result.uninstallTargetsExactInstallation=last.entry===old&&last.version==='0.1.5-rc.1'&&!!row(active);
+ document.querySelector('[data-page="plugins"]').click();d('plugin-form-title').scrollIntoView();
  window.testResult=result;
 })().catch(e=>window.testResult={error:String(e)});
 ''',None,None)

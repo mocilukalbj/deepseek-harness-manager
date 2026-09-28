@@ -14,14 +14,15 @@ from gi.repository import Gtk, WebKit2, GLib
 
 SCENES = [
     ('01-launch', 1280, 920),
-    ('02-kernel-versions', 1280, 1180),
+    ('02-kernel-versions', 1280, 1260),
     ('03-kernel-compatibility', 1280, 800),
     ('04-plugins', 1280, 940),
     ('05-plugin-incompatible', 1280, 1140),
     ('06-plugin-compatible', 1280, 1140),
     ('07-no-kernel', 1280, 920),
     ('08-no-kernel-declarations', 1280, 1140),
-    ('09-query-error', 1280, 1000),
+    ('09-query-error', 1280, 1100),
+    ('10-uninstall-core', 1280, 980),
 ]
 
 BRIDGE = r'''
@@ -29,6 +30,13 @@ window.exampleCalls = [];
 window.exampleStatus = JSON.parse(JSON.stringify(window.exampleData.status));
 if (window.exampleScene === '07-no-kernel' || window.exampleScene === '08-no-kernel-declarations') {
   Object.assign(window.exampleStatus, {core:null, cores:[], coreError:'未检测到可用内核，可在版本管理中安装。', normalRunning:false});
+}
+if (window.exampleScene === '10-uninstall-core') {
+  const old = structuredClone(window.exampleStatus.core);
+  const folder='/home/demo/.local/share/dsh-tauri/kernels/0.1.7-rc.2-example';
+  window.exampleStatus.core={version:'0.1.7-rc.2',root:folder+'/node_modules/@deepseek-ai/dsh',entry:folder+'/node_modules/@deepseek-ai/dsh/lib/bin.js'};
+  window.exampleStatus.cores=[{...window.exampleStatus.core,current:true,canUninstall:false,uninstallKind:'managed',uninstallReason:'请先切换到其他内核，再卸载当前版本。'},
+    {...old,current:false,canUninstall:true,uninstallKind:'npm-global',uninstallPath:old.root}];
 }
 window.__TAURI__ = {core:{invoke:async(command,args)=>{
   if(command === 'startup_mode') return 'manage';
@@ -63,6 +71,10 @@ PREPARE = r'''
     show('launch');
     notice(scene === '07-no-kernel' ? '示例：尚未安装内核，版本管理仍然可用。' : '示例：日常环境已就绪，可选择普通模式或安全模式。');
     window.scrollTo(0,0);
+  } else if (scene === '10-uninstall-core') {
+    show('kernel');notice('示例：已切换到新内核，可确认卸载旧的 npm 全局安装。');
+    $('core-list').querySelector('.version-actions .danger').click();
+    window.scrollTo(0,0);
   } else if (scene.startsWith('02-') || scene.startsWith('03-') || scene.startsWith('09-')) {
     show('kernel');$('core-version').value='0.1.7-rc.2';await fetchVersions('core');
     if(scene.startsWith('03-')) {
@@ -86,7 +98,8 @@ PREPARE = r'''
   if(scene==='05-plugin-incompatible' && !$('plugin-compat').textContent.includes('不匹配')) throw new Error('Missing mismatch');
   if(scene==='06-plugin-compatible' && $('plugin-compat').textContent.includes('不匹配')) throw new Error('Wrong compatible example');
   if(scene==='08-no-kernel-declarations' && !$('plugin-compat').textContent.includes('未核验')) throw new Error('Missing unknown state');
-  if(scene==='09-query-error' && !$('core-version-count').textContent.includes('失败')) throw new Error('Missing failure state');
+  if(scene==='10-uninstall-core' && $('core-list').querySelector('.uninstall-confirmation').hidden) throw new Error('Missing uninstall confirmation');
+  if(scene==='09-query-error'  && !$('core-version-count').textContent.includes('失败')) throw new Error('Missing failure state');
   window.exampleReady=true;
 })().catch(e=>window.exampleError=String(e));
 '''

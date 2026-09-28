@@ -189,9 +189,28 @@ function render() {
   if (!state.cores.length) cores.append(node('p', '未检测到可用内核，可以在下方安装。', 'empty'));
   for (const core of state.cores) {
     const item = node('div', undefined, 'version-item'); const desc = node('div');
+    desc.className = 'version-description';
     desc.append(node('strong', core.version), node('small', core.entry)); item.append(desc);
-    if (core.current) item.append(node('span', '当前使用', 'badge on'));
-    else item.append(actionButton('切换到此版本', () => perform({action:'switch_core', version:core.version}, '正在切换内核…')));
+    if (core.uninstallKind) desc.append(node('small', core.uninstallKind === 'managed' ? '管理器安装' : 'npm 全局安装'));
+    const bar = node('div', undefined, 'version-actions');
+    if (core.current) bar.append(node('span', '当前使用', 'badge on'));
+    else bar.append(actionButton('切换到此版本', () => perform({action:'switch_core', version:core.version, entry:core.entry}, '正在切换内核…')));
+    if (core.canUninstall && !core.current) {
+      const confirmation = node('div', undefined, 'uninstall-confirmation'); confirmation.hidden = true;
+      confirmation.append(node('strong', `卸载内核 ${core.version}？`),
+        node('p', '将先停止普通和安全后端，再删除此安装目录。会话、配置和插件数据会保留。'),
+        node('code', core.uninstallPath));
+      const actions = node('div', undefined, 'button-row');
+      actions.append(actionButton('确认卸载', () => perform({action:'uninstall_core', version:core.version, entry:core.entry}, `正在卸载内核 ${core.version}…`), true),
+        actionButton('取消', () => { confirmation.hidden = true; remove.focus(); }));
+      confirmation.append(actions);
+      const remove = actionButton('卸载', () => { confirmation.hidden = false; }, true);
+      remove.setAttribute('aria-label', `卸载内核 ${core.version}`);
+      bar.append(remove); item.append(bar, confirmation);
+    } else {
+      item.append(bar);
+      if (core.uninstallReason) desc.append(node('small', core.uninstallReason));
+    }
     cores.append(item);
   }
   const chosen = $('profile').value;

@@ -87,7 +87,7 @@ async fn manage(window: WebviewWindow, app: tauri::AppHandle, request: Value) ->
     authorized(&window)?;
     let action = request["action"].as_str().unwrap_or("").to_string();
     let supported = ["status", "versions", "version_info", "open_normal", "open_safe", "stop_normal", "stop_safe",
-                     "install_core", "switch_core", "plugin_install", "plugin_remove", "plugin_toggle"];
+                     "install_core", "switch_core", "uninstall_core", "plugin_install", "plugin_remove", "plugin_toggle"];
     if !supported.contains(&action.as_str()) { return Err("不支持的管理操作。".into()); }
     let value = tauri::async_runtime::spawn_blocking(move || helper(request)).await.map_err(|e| e.to_string())??;
     if action == "open_normal" || action == "open_safe" {
@@ -121,10 +121,10 @@ async fn manage(window: WebviewWindow, app: tauri::AppHandle, request: Value) ->
         // Authentication tokens never go to the management DOM or its logs.
         return Ok(json!({"message": "已打开 DeepSeek Harness。"}));
     }
-    if ["install_core", "switch_core", "stop_normal", "plugin_install", "plugin_remove", "plugin_toggle"].contains(&action.as_str()) {
+    if ["install_core", "switch_core", "uninstall_core", "stop_normal", "plugin_install", "plugin_remove", "plugin_toggle"].contains(&action.as_str()) {
         if let Some(window) = app.get_webview_window("main") { let _ = window.close(); }
     }
-    if ["install_core", "switch_core", "stop_safe"].contains(&action.as_str()) {
+    if ["install_core", "switch_core", "uninstall_core", "stop_safe"].contains(&action.as_str()) {
         if let Some(window) = app.get_webview_window("safe") { let _ = window.close(); }
     }
     Ok(value)
