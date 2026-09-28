@@ -2,6 +2,24 @@
 
 DeepSeek Harness 的独立桌面启动器、恢复入口和版本管理器。普通工作窗口仍直接使用内核自带的 WebUI；管理页面由外壳提供，即使没有安装内核或内核已经损坏，也能打开。
 
+## 界面预览
+
+从同一个管理器进入日常环境、安全模式和版本恢复。下图使用当前界面与固定演示数据生成，用户路径及运行状态为示例。
+
+![启动与恢复：普通模式、安全模式、当前内核和恢复入口](docs/screenshots/01-launch.png)
+
+| 查找并选择内核版本 | 升级前检查插件声明 |
+| --- | --- |
+| [![内核发布版本列表，包含精确版本号和发布标签](docs/screenshots/02-kernel-versions.png)](docs/examples.md#2-获取内核版本) | [![候选内核与已装插件的兼容检查，展开冲突详情](docs/screenshots/03-kernel-compatibility.png)](docs/examples.md#3-候选内核与插件兼容性) |
+| **插件版本不匹配** | **选择声明匹配的版本** |
+| [![Sidebar 新版与当前内核的声明不匹配](docs/screenshots/05-plugin-incompatible.png)](docs/examples.md#5-插件版本不匹配) | [![Sidebar 旧版与当前内核的声明匹配](docs/screenshots/06-plugin-compatible.png)](docs/examples.md#6-插件声明匹配) |
+| **无内核仍可恢复** | **无内核仍可查看声明** |
+| [![没有内核时管理器仍可访问版本管理](docs/screenshots/07-no-kernel.png)](docs/examples.md#7-没有内核也能打开管理器) | [![没有内核时插件范围仍可读取，结果显示未核验](docs/screenshots/08-no-kernel-declarations.png)](docs/examples.md#8-没有内核也能查看兼容声明) |
+| **管理已装插件** | **查询失败与重试** |
+| [![查看已装插件和本地源码插件，支持停用与版本切换](docs/screenshots/04-plugins.png)](docs/examples.md#4-管理已装插件) | [![获取版本失败时明确显示超时原因并保留重试入口](docs/screenshots/09-query-error.png)](docs/examples.md#9-查询失败与重试) |
+
+**[查看完整 9 图操作示例 →](docs/examples.md)**，包含已装插件管理、查询失败与重试，以及截图复现方法。版本信息为文档快照；“声明匹配”不代表实际启动验证通过。
+
 ## 启动
 
 Linux / macOS：
