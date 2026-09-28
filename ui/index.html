@@ -1,6 +1,34 @@
 <!doctype html>
-<html lang="zh-CN"><meta charset="utf-8"><title>DSH Tauri</title>
-<style>body{font:16px system-ui;background:#f5f6f8;color:#20232a;padding:48px}h1{font-size:24px}p{line-height:1.8;max-width:760px}</style>
-<h1>正在连接 DeepSeek Harness</h1>
-<p id="status">正在检查本地服务与登录状态，首次连接可能需要一些时间。</p>
-</html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DeepSeek Harness 管理</title><link rel="stylesheet" href="manager.css"><script src="manager.js" defer></script></head>
+<body>
+<aside class="rail"><div class="brand"><span class="mark">D</span><div>DeepSeek Harness<small>桌面管理</small></div></div>
+<nav aria-label="管理页面"><button class="nav active" data-page="launch">启动与恢复</button><button class="nav" data-page="kernel">内核版本</button><button class="nav" data-page="plugins">插件管理</button><button class="nav" data-page="logs">操作日志</button></nav>
+<div class="rail-note"><span class="dot"></span> 独立于内核运行<br><small>即使 Harness 无法启动，<br>也能在这里管理和恢复。</small></div></aside>
+<main>
+<header><span class="eyebrow">LOCAL DESKTOP</span><button id="refresh" class="quiet">刷新状态</button></header>
+<div id="notice" role="status" aria-live="polite">正在读取本机安装信息…</div>
+<section id="launch" class="page">
+<h1>启动与恢复</h1><p class="intro">选择日常工作环境，或从干净的环境开始排查。</p>
+<div class="overview"><span>当前内核</span><strong id="current-version">读取中</strong><span id="normal-status" class="badge">检测中</span></div>
+<div class="launch-grid">
+<article class="card normal"><div class="card-icon">↗</div><h2>普通模式</h2><p>加载日常插件、会话和配置，继续原来的工作。</p><div class="card-bottom"><button id="open-normal" class="primary action">打开普通模式</button><button id="stop-normal" class="quiet action">停止后端</button></div></article>
+<article class="card safe"><div class="card-icon">◇</div><h2>安全模式</h2><p>仅加载官方基础组件和 WebUI，跳过所有第三方插件与自定义覆盖配置。</p><div class="card-bottom"><button id="open-safe" class="secondary action">打开安全模式</button><button id="stop-safe" class="quiet action">停止安全模式</button></div></article>
+</div>
+<div class="note"><strong>安全模式使用独立环境</strong><p>每次启动创建干净的数据目录，使用单独端口。日常会话不会出现在这里，也不会被修改；使用模型需要在此环境配置。安全模式仍需要可用内核。</p></div>
+<div class="recovery"><div><h3>内核也启动不了？</h3><p>直接管理内核或插件版本，无需先打开 Harness。</p></div><button class="text-button" data-go="kernel">进入版本管理 →</button></div>
+</section>
+<section id="kernel" class="page" hidden>
+<h1>内核版本</h1><p class="intro">查看、安装和切换精确版本，无需运行 Harness。</p>
+<div class="panel"><div class="section-title"><h2>本机版本</h2><span class="muted">切换后可选择启动模式</span></div><div id="core-list" class="version-list"></div><p id="core-error" class="error-text" hidden></p></div>
+<div class="panel"><h2>安装其他版本</h2><p class="muted">先下载并校验，再停止后端、切换入口。安装失败时不替换当前版本。</p><div class="form-row"><label>精确版本<input id="core-version" placeholder="例如 0.1.5-rc.1" autocomplete="off"></label><button id="core-fetch" class="secondary action">获取可用版本</button><button id="core-details" class="secondary action">查看兼容声明</button><button id="core-install" class="primary action">安装并切换</button></div><div class="version-browser"><label for="core-versions">已发布版本 <span id="core-version-count" class="muted">点击“获取可用版本”加载</span></label><select id="core-versions" size="6" aria-label="内核已发布版本" disabled><option>尚未获取版本</option></select><p class="footnote">选择列表中的版本会自动读取兼容声明；也可输入精确版本后点击“查看兼容声明”。</p></div><div id="core-compat" class="compat" aria-live="polite"><p class="muted">尚未选择要查看的版本。</p></div><p class="footnote">可切回保留在本机的版本。需要 Node.js、npm 和网络连接。</p></div>
+</section>
+<section id="plugins" class="page" hidden>
+<h1>插件管理</h1><p class="intro">直接读取本地配置和包信息，内核停止时也能操作。</p>
+<div class="profile-bar"><label>环境 <select id="profile"></select></label><span class="muted">修改前会停止普通后端，完成后手动启动。</span></div>
+<div id="plugin-list" class="panel plugin-list"></div>
+<div class="panel"><h2 id="plugin-form-title">安装或切换插件版本</h2><div class="form-row plugin-form"><label>npm 包名<input id="plugin-name" placeholder="例如 dsh-better-sidebar" autocomplete="off" spellcheck="false"></label><label>精确版本<input id="plugin-version" placeholder="例如 0.19.1" autocomplete="off"></label></div><div class="button-row"><button id="plugin-fetch" class="secondary action">获取可用版本</button><button id="plugin-details" class="secondary action">查看兼容声明</button><button id="plugin-install" class="primary action">安装指定版本</button></div><div class="version-browser"><label for="plugin-versions">已发布版本 <span id="plugin-version-count" class="muted">点击“获取可用版本”加载</span></label><select id="plugin-versions" size="6" aria-label="插件已发布版本" disabled><option>尚未获取版本</option></select><p class="footnote">选择列表中的版本会自动读取兼容声明；也可输入精确版本后点击“查看兼容声明”。</p></div><div id="plugin-compat" class="compat" aria-live="polite"><p class="muted">尚未选择要查看的版本。</p></div><p class="footnote">本地 link/file 插件可以停用或移除，源码版本请在对应项目中管理。安装不执行依赖脚本；需要构建的插件须在终端单独处理。兼容声明不代替实际启动验证。</p></div>
+</section>
+<section id="logs" class="page" hidden><h1>操作日志</h1><p class="intro">安装期间自动刷新。错误信息会保留在这里，便于排查。</p><pre id="log" tabindex="0">暂无管理操作。</pre></section>
+<footer>桌面管理器 0.2 · 本机操作</footer>
+</main></body></html>

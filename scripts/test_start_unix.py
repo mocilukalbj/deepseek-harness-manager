@@ -13,21 +13,26 @@ class LauncherTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         (self.root / 'backend.json').write_text(json.dumps({'home': str(self.root), 'port': 3080}))
-        (self.root / 'core-version.txt').write_text('0.1.5-rc.2\n')
+        (self.root / 'tauri.conf.json').write_text('{"version":"0.2.0"}')
         (self.root / 'target/release').mkdir(parents=True)
         self.binary = self.root / 'target/release/dsh-wsl-tauri'
         self.binary.write_bytes(b'previous executable')
         self.stamp = self.root / 'ui-build-linux.json'
-        self.record = {'coreVersion': '0.1.5-rc.2', 'sourceSha256': 'source',
+        self.record = {'shellVersion': '0.2.0', 'sourceSha256': 'source',
                        'binarySha256': launcher.digest(self.binary)}
         self.stamp.write_text(json.dumps(self.record))
         for patcher in (patch.object(launcher, 'ROOT', self.root),
                         patch.object(launcher, 'PLATFORM', 'linux'),
-                        patch.object(launcher, 'installed_version', return_value='0.1.5-rc.2'),
                         patch.object(launcher, 'source_hash', return_value='source'),
                         patch('sys.argv', ['start_unix.py', '--build-only'])):
             patcher.start()
             self.addCleanup(patcher.stop)
+
+    def test_manager_launch_does_not_need_kernel_or_backend_config(self):
+        (self.root / 'backend.json').unlink()
+        with patch('sys.argv', ['start_unix.py', '--manage']), patch.object(launcher.subprocess, 'Popen') as launch:
+            launcher.main()
+            self.assertEqual(launch.call_args.args[0], [str(self.binary), '--manage'])
 
     def test_unchanged_build_is_reused(self):
         with patch.object(launcher.subprocess, 'run') as run:
