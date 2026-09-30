@@ -116,7 +116,7 @@ class Maintenance:
             output.write('\n' + time.strftime('%H:%M:%S') + ' · ' + ' '.join(map(str, command)) + '\n')
             output.flush()
             start = output.tell()
-            child = subprocess.Popen(command, cwd=cwd, env=env or self.env, stdout=output,
+            child = subprocess.Popen(command, cwd=cwd, env=env or self.env, stdin=subprocess.DEVNULL, stdout=output,
                                      stderr=subprocess.STDOUT, start_new_session=True)
             try:
                 code = child.wait(timeout=timeout)
@@ -757,7 +757,7 @@ console.log(JSON.stringify(rows.map(row => {
             version = exact_version(request.get('version'))
             if spec.startswith(('link:', 'file:', 'workspace:')):
                 raise ValueError('本地源码插件不能用 npm 版本覆盖；可以停用或移除它。')
-            metadata = json.loads(self.run([self.tool('npm'), 'view', f'{name}@{version}', '--json'], timeout=60, capture=True))
+            metadata = self.registry_view(f'{name}@{version}')
             if metadata.get('name') != name or metadata.get('version') != version or not metadata.get('dsh', {}).get('bundle'):
                 raise ValueError('此版本未声明有效的 Harness bundle，未安装。')
         if action == 'plugin_toggle' and not isinstance(request.get('enabled'), bool):
@@ -783,13 +783,18 @@ console.log(JSON.stringify(rows.map(row => {
                 args = ['add', '--save-exact', f'{name}@{version}', '--ignore-scripts']
             else:
                 args = ['remove', name, '--config.ignore-scripts=true']
-            self.run([pnpm, '--dir', str(path), *args])
+            # Desktop maintenance has no terminal. Keep pnpm's background
+            # self-update check out of the install process's lifetime.
+            self.run([pnpm, '--dir', str(path), *args,
+                      '--config.update-notifier=false', '--reporter=append-only'])
             data = read_json(file)
             bundles = data.setdefault('dsh', {}).setdefault('profile', {}).setdefault('bundles', [])
             if action == 'plugin_remove':
                 bundles[:] = [n for n in bundles if n != name]
             else:
                 installed = read_json(path / 'node_modules' / name / 'package.json')
+                if installed.get('name') != name or installed.get('version') != version:
+                    raise RuntimeError('插件安装后的版本与请求不符，请刷新并查看日志；未自动启用。')
                 if installed.get('dsh', {}).get('bundle') and name not in bundles:
                     bundles.append(name)
             atomic_json(file, data)

@@ -280,4 +280,28 @@ class MaintenanceTests(unittest.TestCase):
         self.assertIn('--prefer-online', run.call_args.args[0])
         self.assertIn('--prefer-offline=false', run.call_args.args[0])
 
+    def test_plugin_install_uses_noninteractive_pnpm_and_verifies_version(self):
+        metadata={'name':'example-plugin','version':'1.2.3','dsh':{'bundle':{'patch':'x'}}}
+        with patch.object(self.manager,'registry_view',return_value=metadata) as query, \
+             patch.object(self.manager,'stop_normal'), patch.object(self.manager,'tool',return_value='pnpm'), \
+             patch.object(self.manager,'run') as run:
+            self.manager.plugin_action({'action':'plugin_install','package':'example-plugin','profile':'web','version':'1.2.3'})
+        query.assert_called_once_with('example-plugin@1.2.3')
+        command=run.call_args.args[0]
+        self.assertIn('--config.update-notifier=false',command)
+        self.assertIn('--reporter=append-only',command)
+        self.assertIn('--ignore-scripts',command)
+
+    def test_plugin_wrong_installed_version_is_not_reported_as_success(self):
+        metadata={'name':'example-plugin','version':'2.0.0','dsh':{'bundle':{'patch':'x'}}}
+        with patch.object(self.manager,'registry_view',return_value=metadata), \
+             patch.object(self.manager,'stop_normal'), patch.object(self.manager,'tool',return_value='pnpm'), \
+             patch.object(self.manager,'run'):
+            with self.assertRaisesRegex(RuntimeError,'安装后的版本与请求不符'):
+                self.manager.plugin_action({'action':'plugin_install','package':'example-plugin','profile':'web','version':'2.0.0'})
+
+    def test_command_cannot_consume_maintenance_request_input(self):
+        self.manager.run([sys.executable,'-c','import sys; assert sys.stdin.read()==""; print("no interactive input")'])
+        self.assertIn('no interactive input', self.manager.log.read_text())
+
 if __name__ == '__main__':unittest.main()
