@@ -115,6 +115,7 @@ class Maintenance:
             os.chmod(self.log, 0o600)
             output.write('\n' + time.strftime('%H:%M:%S') + ' · ' + ' '.join(map(str, command)) + '\n')
             output.flush()
+            start = output.tell()
             child = subprocess.Popen(command, cwd=cwd, env=env or self.env, stdout=output,
                                      stderr=subprocess.STDOUT, start_new_session=True)
             try:
@@ -124,7 +125,11 @@ class Maintenance:
                 child.wait()
                 raise RuntimeError('管理操作超时，已停止此次操作的子进程；可查看日志后重试。')
         if code:
-            raise RuntimeError(redact(read_log(self.log)[-3000:]))
+            # Do not mix an earlier npm error into this command's failure.
+            with self.log.open('rb') as output:
+                output.seek(max(start, self.log.stat().st_size - 12000))
+                detail = output.read().decode('utf-8', errors='replace')[-3000:]
+            raise RuntimeError(redact(detail.strip() or f'命令执行失败（退出码 {code}）'))
         return ''
 
     def tool(self, name):
@@ -273,6 +278,7 @@ class Maintenance:
     def registry_view(self, spec, *fields):
         try:
             raw = self.run([self.tool('npm'), 'view', spec, *fields, '--json',
+                            '--prefer-online', '--prefer-offline=false',
                             '--fetch-retries=1', '--fetch-timeout=15000'], timeout=45, capture=True)
             return json.loads(raw)
         except subprocess.TimeoutExpired:
@@ -482,6 +488,28 @@ console.log(JSON.stringify(rows.map(row => {
         atomic_json(self.state / 'selection.json', selection)
         return {'message': f"已切换至 {core['version']}。后端保持停止，可选择普通或安全模式启动。"}
 
+    def run_core_npm(self, command):
+        """Refresh metadata; retry missing versions once without the old cache."""
+        command = [*command, '--prefer-online', '--prefer-offline=false']
+        try:
+            return self.run(command)
+        except RuntimeError as error:
+            if not re.search(r'\bETARGET\b', str(error)):
+                raise
+        # Keep the user's shared npm cache intact. Do not change version pins.
+        with tempfile.TemporaryDirectory(prefix='dsh-npm-refresh-') as cache:
+            try:
+                return self.run([*command, '--cache', cache])
+            except RuntimeError as error:
+                if not re.search(r'\bETARGET\b', str(error)):
+                    raise
+                match = re.search(r'No matching version found for (\S+)\.', str(error))
+                missing = match.group(1) if match else '所需的包版本'
+                raise RuntimeError(
+                    f'内核下载失败：刷新元数据并使用独立缓存重试后，当前 npm 源仍找不到 {missing}。'
+                    '可能是源尚未同步，或该版本依赖发布不完整。请稍后重试或选择其他版本；'
+                    '当前内核和插件未改变。详细信息见操作日志。') from None
+
     def normalize_core(self, stage, version):
         """Older npm releases have floating internal deps; pin and deduplicate."""
         manifest = read_json(stage / 'package.json')
@@ -517,9 +545,9 @@ console.log(JSON.stringify(rows.map(row => {
         manifest['overrides'] = pins
         atomic_json(stage / 'package.json', manifest)
         npm = self.tool('npm')
-        args = ['--prefix', str(stage), '--prefer-offline', '--no-audit', '--no-fund']
-        self.run([npm, 'install', *args])
-        self.run([npm, 'dedupe', *args])
+        args = ['--prefix', str(stage), '--no-audit', '--no-fund']
+        self.run_core_npm([npm, 'install', *args])
+        self.run_core_npm([npm, 'dedupe', *args])
         for root, dirs, files in os.walk(modules):
             if 'package.json' not in files:
                 continue
@@ -579,7 +607,7 @@ console.log(JSON.stringify(rows.map(row => {
         try:
             atomic_json(stage / 'package.json', {'name': 'dsh-shell-runtime', 'private': True,
                                                 'dependencies': {CORE: version}})
-            self.run([self.tool('npm'), 'install', '--prefix', str(stage), '--legacy-peer-deps', '--prefer-offline', '--no-audit', '--no-fund'])
+            self.run_core_npm([self.tool('npm'), 'install', '--prefix', str(stage), '--legacy-peer-deps', '--no-audit', '--no-fund'])
             self.normalize_core(stage, version)
             entry = stage / 'node_modules/@deepseek-ai/dsh/lib/bin.js'
             value = self.run([self.tool('node'), str(entry), '--version'], timeout=30, capture=True).strip()

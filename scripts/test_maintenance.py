@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
@@ -208,5 +209,75 @@ class MaintenanceTests(unittest.TestCase):
         with patch.object(self.manager,'tool',return_value='npm'), \
              patch.object(self.manager,'run',side_effect=subprocess.TimeoutExpired('npm',45)):
             with self.assertRaisesRegex(RuntimeError, '查询超时'): self.manager.versions('example-plugin')
+
+    def test_core_download_revalidates_metadata(self):
+        with patch.object(self.manager, 'run', return_value='ok') as run:
+            self.assertEqual(self.manager.run_core_npm(['npm','install','--prefix','/stage']), 'ok')
+        self.assertIn('--prefer-online', run.call_args.args[0])
+        self.assertIn('--prefer-offline=false', run.call_args.args[0])
+        self.assertNotIn('--cache', run.call_args.args[0])
+        run.assert_called_once()
+
+    def test_missing_version_retries_once_with_disposable_cache(self):
+        commands = []
+        def execute(command):
+            commands.append(command)
+            if len(commands) == 1:
+                raise RuntimeError('npm error code ETARGET\nNo matching version found for @deepseek-ai/dsh-acp-app@0.2.0-rc.2.')
+            cache = Path(command[command.index('--cache')+1])
+            self.assertTrue(cache.is_dir())
+            self.assertEqual(list(cache.iterdir()), [])
+            (cache/'example').write_text('temporary npm data')
+            return 'ok'
+        command = ['npm','install','--prefix','/unchanged-stage']
+        with patch.object(self.manager, 'run', side_effect=execute):
+            self.assertEqual(self.manager.run_core_npm(command), 'ok')
+        self.assertEqual(commands[1][:-2], commands[0])
+        self.assertEqual(command, ['npm','install','--prefix','/unchanged-stage'])
+        self.assertFalse(Path(commands[1][-1]).exists())
+
+    def test_unpublished_dependency_preserves_active_core_and_cleans_stage(self):
+        error = RuntimeError('npm error code ETARGET\nNo matching version found for @deepseek-ai/dsh-acp-app@0.2.0-rc.2.')
+        with patch.object(self.manager, 'run', side_effect=error) as run, \
+             patch.object(self.manager, 'tool', return_value='npm'), \
+             patch.object(self.manager, 'activate') as activate, \
+             patch.object(self.manager, 'stop_normal') as stop:
+            with self.assertRaisesRegex(RuntimeError, '当前 npm 源仍找不到 @deepseek-ai/dsh-acp-app@0.2.0-rc.2'):
+                self.manager.install_core('0.2.0-rc.2')
+            self.assertEqual(run.call_count, 2)
+            self.assertFalse(Path(run.call_args.args[0][-1]).exists())
+            activate.assert_not_called(); stop.assert_not_called()
+        self.assertEqual(list((self.manager.state/'kernels').iterdir()), [])
+
+    def test_unrelated_download_errors_are_not_retried(self):
+        with patch.object(self.manager, 'run', side_effect=RuntimeError('npm error EACCES')) as run:
+            with self.assertRaisesRegex(RuntimeError, 'EACCES'):
+                self.manager.run_core_npm(['npm','install'])
+        run.assert_called_once()
+
+    def test_fresh_cache_failure_keeps_actual_network_error(self):
+        with patch.object(self.manager, 'run', side_effect=[RuntimeError('ETARGET'),RuntimeError('ENETUNREACH')]) as run:
+            with self.assertRaisesRegex(RuntimeError, 'ENETUNREACH'):
+                self.manager.run_core_npm(['npm','install'])
+        self.assertEqual(run.call_count, 2)
+        self.assertFalse(Path(run.call_args.args[0][-1]).exists())
+
+    def test_command_failure_does_not_include_previous_log_errors(self):
+        self.manager.state.mkdir()
+        self.manager.log.write_text('Old command: npm error ETARGET\n')
+        with self.assertRaises(RuntimeError) as error:
+            self.manager.run([sys.executable,'-c',"import sys; print('new failure token=secret'); sys.exit(1)"])
+        self.assertIn('new failure token=[REDACTED]', str(error.exception))
+        self.assertNotIn('ETARGET', str(error.exception))
+        self.assertNotIn('secret', str(error.exception))
+        with self.assertRaisesRegex(RuntimeError, '退出码 7'):
+            self.manager.run([sys.executable,'-c','raise SystemExit(7)'])
+
+    def test_registry_query_revalidates_cached_versions(self):
+        with patch.object(self.manager, 'tool', return_value='npm'), \
+             patch.object(self.manager, 'run', return_value='"0.2.0-rc.2"') as run:
+            self.manager.registry_view('@deepseek-ai/dsh-acp-app@0.2.0-rc.2', 'version')
+        self.assertIn('--prefer-online', run.call_args.args[0])
+        self.assertIn('--prefer-offline=false', run.call_args.args[0])
 
 if __name__ == '__main__':unittest.main()
