@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch, MagicMock
 import maintenance as m
@@ -291,6 +292,8 @@ class MaintenanceTests(unittest.TestCase):
         self.assertIn('--config.update-notifier=false',command)
         self.assertIn('--reporter=append-only',command)
         self.assertIn('--ignore-scripts',command)
+        self.assertIn('--yes',command)
+        self.assertIn('--config.interactive=false',command)
 
     def test_plugin_wrong_installed_version_is_not_reported_as_success(self):
         metadata={'name':'example-plugin','version':'2.0.0','dsh':{'bundle':{'patch':'x'}}}
@@ -303,5 +306,73 @@ class MaintenanceTests(unittest.TestCase):
     def test_command_cannot_consume_maintenance_request_input(self):
         self.manager.run([sys.executable,'-c','import sys; assert sys.stdin.read()==""; print("no interactive input")'])
         self.assertIn('no interactive input', self.manager.log.read_text())
+
+    def test_normalize_core_passes_legacy_peer_deps(self):
+        stage = self.root / 'stage'
+        m.atomic_json(stage / 'package.json', {'name': 'dsh-shell-runtime', 'private': True, 'dependencies': {m.CORE: '0.2.0'}})
+        commands = []
+        def capture_cmd(cmd):
+            commands.append(cmd)
+            return ''
+        with patch.object(self.manager, 'tool', return_value='npm'), \
+             patch.object(self.manager, 'run_core_npm', side_effect=capture_cmd):
+            self.manager.normalize_core(stage, '0.2.0')
+        self.assertTrue(any('install' in c and '--legacy-peer-deps' in c for c in commands))
+        self.assertTrue(any('dedupe' in c and '--legacy-peer-deps' in c for c in commands))
+
+    def test_run_streams_output_line_by_line_to_log(self):
+        self.manager.state.mkdir(parents=True, exist_ok=True)
+        self.manager.run([sys.executable, '-c', "import sys; print('line1'); sys.stdout.flush(); print('line2')"])
+        log_content = self.manager.log.read_text()
+        self.assertIn('line1', log_content)
+        self.assertIn('line2', log_content)
+
+    def test_stop_normal_waits_for_port_release(self):
+        calls = [True, True, False]
+        def listening_mock(port):
+            return calls.pop(0) if calls else False
+        with patch.object(self.manager, 'run'), patch.object(m, 'listening', side_effect=listening_mock), \
+             patch('time.sleep'):
+            self.manager.config['journal_unit'] = 'dsh-test.service'
+            self.manager.stop_normal()
+
+    def test_run_times_out_when_child_is_hung(self):
+        self.manager.state.mkdir(parents=True, exist_ok=True)
+        start = time.time()
+        with self.assertRaisesRegex(RuntimeError, '管理操作超时'):
+            self.manager.run([sys.executable, '-c', 'import time; time.sleep(10)'], timeout=1)
+        self.assertLess(time.time() - start, 5.0)
+
+    def test_capture_passes_devnull_stdin(self):
+        output = self.manager.run([sys.executable, '-c', 'import sys; print("in=" + repr(sys.stdin.read()))'], capture=True)
+        self.assertIn("in=''", output)
+
+    def test_run_core_npm_passes_cwd(self):
+        stage = self.root / 'stage'
+        stage.mkdir(parents=True, exist_ok=True)
+        cwds = []
+        def capture_run(cmd, cwd=None, **kwargs):
+            cwds.append(cwd)
+            return ''
+        with patch.object(self.manager, 'run', side_effect=capture_run):
+            self.manager.run_core_npm(['npm', 'install'], cwd=stage)
+        self.assertEqual(cwds, [stage])
+
+    def test_plugin_install_injects_workspace_root_flag_when_workspace_file_exists(self):
+        profile = self.profile
+        m.atomic_json(profile / 'package.json', {'dependencies': {}})
+        (profile / 'pnpm-workspace.yaml').write_text('packages: ["."]\n')
+        m.atomic_json(profile / 'node_modules/example-plugin/package.json',
+                      {'name': 'example-plugin', 'version': '1.0.0', 'dsh': {'bundle': {'patch': 'x'}}})
+        command = []
+        def capture_cmd(cmd):
+            command.extend(cmd)
+            return ''
+        with patch.object(self.manager, 'stop_normal'), \
+             patch.object(self.manager, 'tool', return_value='pnpm'), \
+             patch.object(self.manager, 'registry_view', return_value={'name': 'example-plugin', 'version': '1.0.0', 'dsh': {'bundle': {'patch': 'x'}}}), \
+             patch.object(self.manager, 'run', side_effect=capture_cmd):
+            self.manager.plugin_action({'action': 'plugin_install', 'profile': 'web', 'package': 'example-plugin', 'version': '1.0.0'})
+        self.assertIn('-w', command)
 
 if __name__ == '__main__':unittest.main()

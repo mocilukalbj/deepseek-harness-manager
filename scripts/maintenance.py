@@ -16,6 +16,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 
@@ -97,6 +98,21 @@ class Maintenance:
             raise ValueError('普通模式与安全模式需要不同的端口（1024–65535）。')
         self.env = dict(os.environ, HOME=str(self.home))
         self.env['PATH'] = os.pathsep.join([str(self.home / '.npm-global/bin'), str(self.home / '.local/bin'), self.env.get('PATH', '')])
+        for candidate in (self.home, Path.home()):
+            node_dirs = list((candidate / '.nvm/versions/node').glob('*/bin'))
+            if node_dirs:
+                def _version_key(p):
+                    name = p.parent.name.lstrip('v')
+                    try:
+                        return [int(x) for x in name.split('.')]
+                    except Exception:
+                        return [0]
+                node_dirs.sort(key=_version_key, reverse=True)
+                self.env['PATH'] = os.pathsep.join([str(node_dirs[0]), self.env['PATH']])
+                break
+        self.env['CI'] = '1'
+        self.env['npm_config_yes'] = 'true'
+        self.env['PYTHONUNBUFFERED'] = '1'
         # Do not inherit a parent Harness profile, patch or snapshot selection.
         for key in list(self.env):
             if key.startswith('DSH_'):
@@ -107,23 +123,40 @@ class Maintenance:
         self.state.mkdir(parents=True, exist_ok=True, mode=0o700)
         if capture:
             result = subprocess.run(command, cwd=cwd, env=env or self.env, capture_output=True,
-                                    text=True, timeout=timeout)
+                                    text=True, timeout=timeout, stdin=subprocess.DEVNULL)
             if result.returncode:
                 raise RuntimeError(redact(result.stderr[-2000:] or result.stdout[-2000:] or '命令执行失败'))
             return result.stdout
-        with self.log.open('a') as output:
+        with self.log.open('a', encoding='utf-8', errors='replace') as output:
             os.chmod(self.log, 0o600)
             output.write('\n' + time.strftime('%H:%M:%S') + ' · ' + ' '.join(map(str, command)) + '\n')
             output.flush()
             start = output.tell()
-            child = subprocess.Popen(command, cwd=cwd, env=env or self.env, stdin=subprocess.DEVNULL, stdout=output,
-                                     stderr=subprocess.STDOUT, start_new_session=True)
+            child = subprocess.Popen(
+                command, cwd=cwd, env=env or self.env, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, start_new_session=True, encoding='utf-8', errors='replace'
+            )
+            def _drain():
+                try:
+                    for line in child.stdout:
+                        output.write(line)
+                        output.flush()
+                except Exception:
+                    pass
+
+            reader = threading.Thread(target=_drain, daemon=True)
+            reader.start()
             try:
                 code = child.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 os.killpg(child.pid, signal.SIGKILL)
                 child.wait()
                 raise RuntimeError('管理操作超时，已停止此次操作的子进程；可查看日志后重试。')
+            finally:
+                reader.join(timeout=1.0)
+                if child.stdout and not child.stdout.closed:
+                    child.stdout.close()
         if code:
             # Do not mix an earlier npm error into this command's failure.
             with self.log.open('rb') as output:
@@ -134,13 +167,32 @@ class Maintenance:
 
     def tool(self, name):
         path = shutil.which(name, path=self.env['PATH'])
-        if not path and (self.home / '.nvm/nvm.sh').is_file():
-            script = 'export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"; nvm use default >/dev/null 2>&1 || exit 1; printf "%s" "$PATH"'
-            result = subprocess.run(['bash', '-c', script], env=self.env,
-                                    capture_output=True, text=True, timeout=30)
-            if result.returncode == 0:
-                self.env['PATH'] = result.stdout
-                path = shutil.which(name, path=self.env['PATH'])
+        if not path:
+            candidates = []
+            for candidate in (self.home, Path.home(), Path(os.environ.get('HOME', ''))):
+                if candidate and candidate not in candidates:
+                    candidates.append(candidate)
+            for base in candidates:
+                nvm_sh = base / '.nvm/nvm.sh'
+                if nvm_sh.is_file():
+                    nvm_dir = nvm_sh.parent
+                    script = f'export NVM_DIR="{nvm_dir}"; . "{nvm_sh}"; nvm use default >/dev/null 2>&1 || exit 1; printf "%s" "$PATH"'
+                    result = subprocess.run(['bash', '-c', script], env=dict(self.env, HOME=str(base)),
+                                            capture_output=True, text=True, timeout=30)
+                    if result.returncode == 0 and result.stdout.strip():
+                        self.env['PATH'] = result.stdout
+                        path = shutil.which(name, path=self.env['PATH'])
+                        if path:
+                            break
+                node_dirs = sorted((base / '.nvm/versions/node').glob('*/bin'), reverse=True)
+                for bin_dir in node_dirs:
+                    candidate_tool = bin_dir / name
+                    if candidate_tool.is_file() and os.access(candidate_tool, os.X_OK):
+                        self.env['PATH'] = os.pathsep.join([str(bin_dir), self.env['PATH']])
+                        path = str(candidate_tool)
+                        break
+                if path:
+                    break
         if not path:
             raise RuntimeError(f'未找到 {name}。请先安装它并加入 PATH；管理页面仍可使用。')
         return path
@@ -382,6 +434,11 @@ console.log(JSON.stringify(rows.map(row => {
                 launcher = self.home / launcher
             self.run(['bash', str(launcher), 'stop'], timeout=90)
         if listening(self.port):
+            for _ in range(30):
+                if not listening(self.port):
+                    break
+                time.sleep(0.2)
+        if listening(self.port):
             raise RuntimeError('后端端口仍被占用，未修改安装。请先停止该进程。')
 
     def safe_record(self):
@@ -408,6 +465,10 @@ console.log(JSON.stringify(rows.map(row => {
             if self.safe_running():
                 os.killpg(pid, signal.SIGKILL)
         (self.state / 'safe-process.json').unlink(missing_ok=True)
+        for _ in range(30):
+            if not listening(self.safe_port):
+                break
+            time.sleep(0.1)
 
     def open_safe(self):
         core = self.current_core()
@@ -488,18 +549,19 @@ console.log(JSON.stringify(rows.map(row => {
         atomic_json(self.state / 'selection.json', selection)
         return {'message': f"已切换至 {core['version']}。后端保持停止，可选择普通或安全模式启动。"}
 
-    def run_core_npm(self, command):
+    def run_core_npm(self, command, cwd=None):
         """Refresh metadata; retry missing versions once without the old cache."""
         command = [*command, '--prefer-online', '--prefer-offline=false']
+        kwargs = {'cwd': cwd} if cwd is not None else {}
         try:
-            return self.run(command)
+            return self.run(command, **kwargs)
         except RuntimeError as error:
             if not re.search(r'\bETARGET\b', str(error)):
                 raise
         # Keep the user's shared npm cache intact. Do not change version pins.
         with tempfile.TemporaryDirectory(prefix='dsh-npm-refresh-') as cache:
             try:
-                return self.run([*command, '--cache', cache])
+                return self.run([*command, '--cache', cache], **kwargs)
             except RuntimeError as error:
                 if not re.search(r'\bETARGET\b', str(error)):
                     raise
@@ -545,7 +607,7 @@ console.log(JSON.stringify(rows.map(row => {
         manifest['overrides'] = pins
         atomic_json(stage / 'package.json', manifest)
         npm = self.tool('npm')
-        args = ['--prefix', str(stage), '--no-audit', '--no-fund']
+        args = ['--prefix', str(stage), '--legacy-peer-deps', '--no-audit', '--no-fund']
         self.run_core_npm([npm, 'install', *args])
         self.run_core_npm([npm, 'dedupe', *args])
         for root, dirs, files in os.walk(modules):
@@ -783,9 +845,11 @@ console.log(JSON.stringify(rows.map(row => {
                 args = ['add', '--save-exact', f'{name}@{version}', '--ignore-scripts']
             else:
                 args = ['remove', name, '--config.ignore-scripts=true']
-            # Desktop maintenance has no terminal. Keep pnpm's background
-            # self-update check out of the install process's lifetime.
-            self.run([pnpm, '--dir', str(path), *args,
+            extra_args = []
+            if (path / 'pnpm-workspace.yaml').is_file():
+                extra_args.append('-w')
+            self.run([pnpm, '--dir', str(path), *args, *extra_args,
+                      '--yes', '--config.interactive=false', '--config.confirm-modules-purge=false',
                       '--config.update-notifier=false', '--reporter=append-only'])
             data = read_json(file)
             bundles = data.setdefault('dsh', {}).setdefault('profile', {}).setdefault('bundles', [])
@@ -832,7 +896,7 @@ console.log(JSON.stringify(rows.map(row => {
 
 if __name__ == '__main__':
     try:
-        payload = json.loads(sys.stdin.read(65536))
+        payload = json.loads(sys.stdin.read())
         result = Maintenance(payload['config']).dispatch(payload['request'])
         print(json.dumps(result, ensure_ascii=False))
     except Exception as error:
