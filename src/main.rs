@@ -7,8 +7,26 @@ use std::os::windows::process::CommandExt;
 use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 fn project_root() -> PathBuf {
-    std::env::var_os("DSH_TAURI_ROOT").map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+    if let Some(root) = std::env::var_os("DSH_TAURI_ROOT").map(PathBuf::from) {
+        if root.join("backend.json").is_file() {
+            return root;
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            if dir.join("backend.json").is_file() {
+                return dir.to_path_buf();
+            }
+            if let Some(target) = dir.parent() {
+                if let Some(root) = target.parent() {
+                    if root.join("backend.json").is_file() {
+                        return root.to_path_buf();
+                    }
+                }
+            }
+        }
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
 fn config() -> Result<Value, String> {
@@ -42,8 +60,15 @@ fn helper(request: Value) -> Result<Value, String> {
         }
         let script = format!("/mnt/{}/{}", (bytes[0] as char).to_ascii_lowercase(), &script[3..]);
         let mut command = Command::new("wsl.exe");
-        command.args(["-d", config["distribution"].as_str().ok_or("缺少 WSL distribution")?,
-                      "-u", config["user"].as_str().ok_or("缺少 WSL user")?, "--", "python3", "-B", &script]);
+        let mut args = vec![
+            "-d", config["distribution"].as_str().ok_or("缺少 WSL distribution")?,
+            "-u", config["user"].as_str().ok_or("缺少 WSL user")?,
+        ];
+        if let Some(home) = config.get("home").and_then(|v| v.as_str()) {
+            args.extend(["--cd", home]);
+        }
+        args.extend(["--", "python3", "-B", &script]);
+        command.args(args);
         command.creation_flags(0x08000000);
         command
     };

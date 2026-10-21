@@ -219,9 +219,15 @@ function render() {
   else if (state.profiles.some(p => p.name === 'web')) $('profile').value = 'web';
   renderPlugins(); controls();
 }
+let refreshPromise = null;
 async function refresh(silent = false) {
-  try { state = await manage({action:'status'}); render(); }
-  catch (e) { if (!silent) notice(String(e), 'error'); }
+  if (refreshPromise) return refreshPromise;
+  refreshPromise = (async () => {
+    try { state = await manage({action:'status'}); render(); }
+    catch (e) { if (!silent) notice(String(e), 'error'); }
+    finally { refreshPromise = null; }
+  })();
+  return refreshPromise;
 }
 async function perform(request, message) {
   if (busy) return;
@@ -231,10 +237,18 @@ async function perform(request, message) {
     queries[kind].list++; queries[kind].loadingList = false;
     resetDetails(kind, '安装状态可能变化，请重新查看兼容声明。');
   }
-  const timer = setInterval(() => refresh(true), 3000);
+  const timer = setInterval(() => refresh(true), 2500);
   try { const result = await manage(request); notice(result.message || '操作完成。', 'success'); }
   catch (e) { notice(String(e), 'error'); }
-  finally { clearInterval(timer); busy = false; await refresh(true); controls(); }
+  finally {
+    clearInterval(timer);
+    if (refreshPromise) {
+      try { await refreshPromise; } catch {}
+    }
+    busy = false;
+    await refresh(true);
+    controls();
+  }
 }
 document.querySelectorAll('[data-page]').forEach(b => b.addEventListener('click', () => show(b.dataset.page)));
 document.querySelectorAll('[data-go]').forEach(b => b.addEventListener('click', () => show(b.dataset.go)));
